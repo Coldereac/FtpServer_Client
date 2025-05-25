@@ -34,6 +34,7 @@ public class FileTransferHandler implements Runnable {
                 receiveFile(dataSocket);
             }
             System.out.println("Data transfer complete for " + filePath.getFileName() + ".");
+            System.out.print("> ");
 
         } catch (IOException e) {
             System.err.println("Error in FileTransferHandler for " + filePath.getFileName() + ": " + e.getMessage());

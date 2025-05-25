@@ -38,6 +38,7 @@ public class FtpClient {
         Path localFilePath = Paths.get(localFilePathString);
         if (!Files.exists(localFilePath) || !Files.isRegularFile(localFilePath)) {
             System.err.println("Local file not found or not a regular file: " + localFilePathString);
+            System.out.print("> ");
             return;
         }
 
