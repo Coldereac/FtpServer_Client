@@ -1,27 +1,26 @@
 package server;
 
-import common.Constants;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.*;
-import java.util.Arrays;
 import java.util.stream.Collectors;
 
 public class ClientHandler implements Runnable {
     private Socket clientControlSocket;
     private BufferedReader in;
     private PrintWriter out;
-    private Path currentDirectory; // Поточна директорія для цього клієнта
-    private Path rootDirectory; // Коренева директорія сервера
+    private Path currentDirectory;
+    private Path rootDirectory;
     private boolean authenticated = false;
 
     public ClientHandler(Socket clientControlSocket, Path rootDirectory) {
         this.clientControlSocket = clientControlSocket;
         this.rootDirectory = rootDirectory;
-        this.currentDirectory = rootDirectory; // Починаємо в кореневій директорії
+        this.currentDirectory = rootDirectory;
         try {
             in = new BufferedReader(new InputStreamReader(clientControlSocket.getInputStream()));
             out = new PrintWriter(clientControlSocket.getOutputStream(), true);
@@ -82,7 +81,7 @@ public class ClientHandler implements Runnable {
             case "LIST":
                 listDirectory();
                 break;
-            case "CD": // Додаємо обробку команди CD
+            case "CD":
                 changeDirectory(args);
                 break;
             default:
@@ -129,9 +128,19 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        System.out.println("Preparing for file upload: " + filename + " (" + filesize + " bytes)");
-        out.println("READY_FOR_UPLOAD");
-        new Thread(new DataTransferHandler(filePath, filesize, DataTransferHandler.TransferMode.UPLOAD)).start();
+        try (ServerSocket dataServerSocket = new ServerSocket(0)) { // Створюємо ServerSocket на випадковому вільному порту (порт 0)
+            int dataPort = dataServerSocket.getLocalPort();
+            System.out.println("Preparing for file upload: " + filename + " (" + filesize + " bytes) on port " + dataPort);
+            out.println("READY_FOR_UPLOAD " + dataPort); // Повідомляємо клієнта про готовність та порт для даних
+
+            Socket dataSocket = dataServerSocket.accept(); // Чекаємо на підключення клієнта до цього порту
+            System.out.println("Data channel established for upload from " + dataSocket.getInetAddress().getHostAddress() + ".");
+            // Тепер передаємо прийнятий dataSocket до DataTransferHandler
+            new Thread(new DataTransferHandler(dataSocket, filePath, filesize, DataTransferHandler.TransferMode.UPLOAD)).start();
+        } catch (IOException e) {
+            System.err.println("Error setting up data channel for upload: " + e.getMessage());
+            out.println("ERROR: Could not set up data channel for upload.");
+        }
     }
 
     private void handleDownloadRequest(String filename) {
@@ -156,9 +165,19 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        System.out.println("Preparing for file download: " + filename + " (" + filesize + " bytes)");
-        out.println("READY_FOR_DOWNLOAD " + filesize);
-        new Thread(new DataTransferHandler(filePath, filesize, DataTransferHandler.TransferMode.DOWNLOAD)).start();
+        try (ServerSocket dataServerSocket = new ServerSocket(0)) { // Створюємо ServerSocket на випадковому вільному порту
+            int dataPort = dataServerSocket.getLocalPort();
+            System.out.println("Preparing for file download: " + filename + " (" + filesize + " bytes) on port " + dataPort);
+            out.println("READY_FOR_DOWNLOAD " + filesize + " " + dataPort); // Повідомляємо клієнта про готовність, розмір та порт
+
+            Socket dataSocket = dataServerSocket.accept(); // Чекаємо на підключення клієнта до цього порту
+            System.out.println("Data channel established for download from " + dataSocket.getInetAddress().getHostAddress() + ".");
+            // Тепер передаємо прийнятий dataSocket до DataTransferHandler
+            new Thread(new DataTransferHandler(dataSocket, filePath, filesize, DataTransferHandler.TransferMode.DOWNLOAD)).start();
+        } catch (IOException e) {
+            System.err.println("Error setting up data channel for download: " + e.getMessage());
+            out.println("ERROR: Could not set up data channel for download.");
+        }
     }
 
     private void createDirectory(String dirName) {
@@ -187,7 +206,6 @@ public class ClientHandler implements Runnable {
         }
         try {
             if (Files.exists(targetPath) && Files.isDirectory(targetPath)) {
-                // Видаляємо вміст директорії рекурсивно
                 Files.walk(targetPath)
                         .sorted(java.util.Comparator.reverseOrder())
                         .map(Path::toFile)
@@ -251,22 +269,19 @@ public class ClientHandler implements Runnable {
 
     private void changeDirectory(String targetDirName) {
         Path targetPath;
-        if (targetDirName.equals("..")) { // Обробка ".."
+        if (targetDirName.equals("..")) {
             targetPath = currentDirectory.getParent();
-            if (targetPath == null || !targetPath.startsWith(rootDirectory)) { // Якщо вже в корені або спроба вийти за межі
-                targetPath = rootDirectory; // Залишаємося в корені
+            if (targetPath == null || !targetPath.startsWith(rootDirectory)) {
+                targetPath = rootDirectory;
             }
-        } else if (targetDirName.equals(".")) { // Обробка "."
-            targetPath = currentDirectory; // Залишаємося в поточній директорії
-        } else if (targetDirName.startsWith("/")) { // Обробка абсолютного шляху (відносно кореня FTP)
-            // Якщо шлях починається з "/", трактуємо його як абсолютний відносно rootDirectory
+        } else if (targetDirName.equals(".")) {
+            targetPath = currentDirectory;
+        } else if (targetDirName.startsWith("/")) {
             targetPath = rootDirectory.resolve(targetDirName.substring(1)).normalize();
-        } else { // Обробка відносного шляху
+        } else {
             targetPath = currentDirectory.resolve(targetDirName).normalize();
         }
 
-
-        // Після всіх обробок, перевіряємо, чи новий шлях не виходить за межі rootDirectory
         if (!targetPath.startsWith(rootDirectory)) {
             System.err.println("Attempted to change directory outside of root: " + targetPath);
             out.println("ERROR: Access denied. Cannot go above root directory.");
@@ -282,7 +297,7 @@ public class ClientHandler implements Runnable {
                 System.err.println("Directory not found or not a directory: " + targetPath);
                 out.println("ERROR: Directory not found or not a directory.");
             }
-        } catch (SecurityException e) { // Наприклад, якщо немає дозволів
+        } catch (SecurityException e) {
             System.err.println("Permission denied for changing directory to " + targetPath + ": " + e.getMessage());
             out.println("ERROR: Permission denied.");
         }

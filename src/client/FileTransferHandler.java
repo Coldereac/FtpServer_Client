@@ -8,6 +8,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
 public class FileTransferHandler implements Runnable {
+    private String serverAddress;
+    private int dataPort;
     private Path filePath;
     private TransferMode mode;
     private long fileSize;
@@ -17,7 +19,10 @@ public class FileTransferHandler implements Runnable {
         DOWNLOAD
     }
 
-    public FileTransferHandler(Path filePath, TransferMode mode, long fileSize) {
+
+    public FileTransferHandler(String serverAddress, int dataPort, Path filePath, TransferMode mode, long fileSize) {
+        this.serverAddress = serverAddress;
+        this.dataPort = dataPort;
         this.filePath = filePath;
         this.mode = mode;
         this.fileSize = fileSize;
@@ -25,8 +30,8 @@ public class FileTransferHandler implements Runnable {
 
     @Override
     public void run() {
-        try (Socket dataSocket = new Socket(Constants.SERVER_ADDRESS, Constants.DATA_PORT)) {
-            System.out.println("Client Data Channel connected to " + Constants.SERVER_ADDRESS + ":" + Constants.DATA_PORT);
+        try (Socket dataSocket = new Socket(serverAddress, dataPort)) {
+            System.out.println("Client Data Channel connected to " + serverAddress + ":" + dataPort);
 
             if (mode == TransferMode.UPLOAD) {
                 sendFile(dataSocket);
@@ -71,12 +76,10 @@ public class FileTransferHandler implements Runnable {
 
             System.out.println("Receiving file: " + filePath.getFileName() + (fileSize != -1 ? " (" + fileSize + " bytes)" : ""));
 
-            while ((bytesRead = in.read(buffer)) != -1) {
+            while (totalBytesRead < fileSize && (bytesRead = in.read(buffer)) != -1) {
                 out.write(buffer, 0, bytesRead);
                 totalBytesRead += bytesRead;
-                if (fileSize != -1 && fileSize > 0) { // Перевірка fileSize > 0, щоб уникнути ділення на нуль
-                    System.out.print("\rDownloading: " + filePath.getFileName() + " - " + (totalBytesRead * 100 / fileSize) + "%");
-                }
+                System.out.print("\rDownloading: " + filePath.getFileName() + " - " + (totalBytesRead * 100 / fileSize) + "%");
             }
             System.out.println("\nFile received: " + filePath.getFileName());
         }
